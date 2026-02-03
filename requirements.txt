@@ -1,0 +1,12 @@
+torch
+transformers
+datasets==3.6.0
+tqdm
+pulp
+pyyaml
+requests
+sentencepiece
+accelerate
+protobuf
+numpy<2
+pyarrow>=14,<16

@@ -1,0 +1,94 @@
+# -------------------------
+# Core switches
+# -------------------------
+llm:
+  enabled: false
+  provider: openai   # openai | anthropic | hf | vllm_http
+
+# -------------------------
+# Provider-specific configs
+# -------------------------
+openai:
+  model: gpt-4.1-mini
+  # IMPORTANT: Do NOT commit API keys.
+  # Set OPENAI_API_KEY in your environment (preferred) or provide it here locally.
+  api_key: null
+  base_url: null             # optional (Azure/proxy)
+  temperature: 0.2
+  max_tokens: 256
+  request_logprobs: false
+  top_logprobs: 0
+
+anthropic:
+  model: claude-3-haiku-20240307
+  # IMPORTANT: Do NOT commit API keys.
+  # Set ANTHROPIC_API_KEY in your environment (preferred) or provide it here locally.
+  api_key: null
+  base_url: https://api.anthropic.com/v1/messages
+  temperature: 0.2
+  max_tokens: 256
+
+hf:
+  model_id: gpt2
+  device: auto               # auto | cpu | cuda
+  dtype: auto                # auto | float16 | bfloat16 | float32
+  temperature: 0.2
+  max_new_tokens: 256
+  do_sample: true
+  enable_scoring: true
+
+vllm_http:
+  request_logprobs: true
+  top_logprobs: 5
+  base_url: http://localhost:8000/v1
+  model: mistral-7b
+  api_key: null
+  temperature: 0.2
+  max_tokens: 256
+
+# -------------------------
+# NLI contradiction scorer
+# -------------------------
+nli:
+  model_name: cross-encoder/nli-deberta-v3-base
+  device: auto
+  batch_size: 8
+  max_length: 192
+
+# -------------------------
+# Claim extraction
+# -------------------------
+claims:
+  split_on_conjunctions: true
+  min_len_chars: 12
+  # Keep the project tractable and aligned with the proposal.
+  max_claims: 10
+
+# -------------------------
+# Optimization solver
+# -------------------------
+solver:
+  mode: hard                 # hard | soft
+  tau: 0.7
+  lambda_penalty: 1.0
+  weight_source: auto        # auto | uniform
+  # With max_claims=10, there are at most C(10,2)=45 pairs.
+  max_pairwise: 45
+
+# -------------------------
+# Rewrite step (optional)
+# -------------------------
+rewrite:
+  enabled: false
+  style: concise             # concise | neutral | detailed
+  preserve_facts: true
+  max_output_tokens: 200
+
+# -------------------------
+# Evaluation
+# -------------------------
+eval:
+  dataset: strategyqa        # truthfulqa | strategyqa
+  split: test                # validation | test
+  max_examples: 50
+  em_normalize: true
