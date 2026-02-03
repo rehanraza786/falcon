@@ -95,12 +95,12 @@ Dataset access is handled via adapter classes that **standardize split usage and
 
 ### Installation
 ```bash
-  pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
 Optional (for generation):
 ```bash
-  export OPENAI_API_KEY=your_key_here
+export OPENAI_API_KEY=your_key_here
 ```
 
 ---
@@ -109,7 +109,7 @@ Optional (for generation):
 
 Run the full evaluation sweep:
 ```bash
-  python run_experiments.py
+python run_experiments.py
 ```
 
 Outputs are written to `./outputs/`:
