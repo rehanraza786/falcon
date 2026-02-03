@@ -1,8 +1,10 @@
-<p align="center">
-  <img src="assets/falcon.png" alt="FALCON logo" />
-</p>
+[![CI](https://github.com/rehanraza786/falcon/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/rehanraza786/falcon/actions/workflows/ci.yaml)
 
 # FALCON: Factual Aware Logical COnsistency Network 
+
+<p align="center">
+  <img align="center" src="assets/falcon.png" alt="FALCON logo" height="300" width="600"/>
+</p>
 
 FALCON is a research-oriented, neuro-symbolic framework for reducing contradictions and hallucinations in Large Language Model (LLM) outputs.  
 It operates at the *claim level*, using Natural Language Inference (NLI) and optimization-based reasoning to retain a maximally consistent subset of generated claims.
