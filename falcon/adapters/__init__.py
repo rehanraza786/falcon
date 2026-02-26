@@ -45,7 +45,9 @@ class TruthfulQAAdapter:
 
     def get_question(self, ex: Dict[str, Any]) -> str:
         # truthful_qa/generation fields typically include 'question'
-        return ex.get("question", "")
+        q = ex.get("question", "")
+        # Remove yes/no constraint to allow free-form answers that can contain contradictions
+        return f"{q}"
 
     def get_gold(self, ex: Dict[str, Any]) -> str:
         """

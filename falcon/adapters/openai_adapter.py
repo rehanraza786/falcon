@@ -19,7 +19,7 @@ class OpenAIConfig:
 
 
 class OpenAIAdapter(LLM):
-    """OpenAI adapter using the official Python SDK (Responses API)."""
+    """OpenAI adapter using the official Python SDK (Chat Completions API)."""
 
     def __init__(self, cfg: OpenAIConfig):
         self.cfg = cfg
@@ -36,51 +36,43 @@ class OpenAIAdapter(LLM):
         self.client = OpenAI(api_key=api_key, base_url=cfg.base_url)
 
     def generate(self, prompt: str) -> Generation:
+        # Build messages for chat completion
+        messages = [{"role": "user", "content": prompt}]
+
         kwargs = {
             "model": self.cfg.model,
-            "input": prompt,
+            "messages": messages,
             "temperature": self.cfg.temperature,
-            "max_output_tokens": self.cfg.max_tokens,
+            "max_tokens": self.cfg.max_tokens,
         }
+
         if self.cfg.request_logprobs:
             kwargs["logprobs"] = True
-            if self.cfg.top_logprobs:
+            if self.cfg.top_logprobs and self.cfg.top_logprobs > 0:
                 kwargs["top_logprobs"] = self.cfg.top_logprobs
 
-        resp = self.client.responses.create(**kwargs)
+        resp = self.client.chat.completions.create(**kwargs)
 
-        # Extract text
+        # Extract text from chat completion response
         text = ""
-        try:
-            text = resp.output_text
-        except Exception:
-            try:
-                for item in resp.output:
-                    if getattr(item, "type", None) == "message":
-                        for c in item.content:
-                            if getattr(c, "type", None) in ("output_text", "text"):
-                                text += getattr(c, "text", "")
-            except Exception:
-                text = ""
+        if resp.choices and len(resp.choices) > 0:
+            choice = resp.choices[0]
+            if choice.message and choice.message.content:
+                text = choice.message.content.strip()
 
-        text = (text or "").strip()
-
-        # Best-effort token logprobs extraction
+        # Extract token logprobs if available
         token_logprobs: Optional[List[float]] = None
         try:
-            for item in getattr(resp, "output", []) or []:
-                if getattr(item, "type", None) == "message":
-                    for c in getattr(item, "content", []) or []:
-                        lp = getattr(c, "logprobs", None)
-                        if lp and isinstance(lp, list):
-                            vals: List[float] = []
-                            for tok in lp:
-                                val = getattr(tok, "logprob", None)
-                                if isinstance(val, (int, float)):
-                                    vals.append(float(val))
-                            if vals:
-                                token_logprobs = vals
-                                break
+            if resp.choices and len(resp.choices) > 0:
+                choice = resp.choices[0]
+                if hasattr(choice, 'logprobs') and choice.logprobs:
+                    if hasattr(choice.logprobs, 'content') and choice.logprobs.content:
+                        vals: List[float] = []
+                        for token_data in choice.logprobs.content:
+                            if hasattr(token_data, 'logprob'):
+                                vals.append(float(token_data.logprob))
+                        if vals:
+                            token_logprobs = vals
         except Exception:
             token_logprobs = None
 

@@ -29,10 +29,66 @@ class FalconRunStats:
 
 
 def normalize_text(s: str) -> str:
+    """Generic text normalization for exact match."""
     s = s.strip().lower()
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"[^a-z0-9\s]", "", s)
     return s.strip()
+
+
+def extract_yes_no(text: str) -> str:
+    """Extract yes/no answer from text for StrategyQA.
+
+    Looks for explicit yes/no tokens, handling common patterns like:
+    - "Yes, because..."
+    - "The answer is no."
+    - "No."
+
+    Returns: "yes", "no", or original text if unclear.
+    """
+    text_lower = text.strip().lower()
+
+    # Direct single-word answers
+    if text_lower in ("yes", "no"):
+        return text_lower
+
+    # Look for explicit patterns
+    yes_patterns = [
+        r'\byes\b',
+        r'\banswer is yes\b',
+        r'\baffirmative\b',
+        r'\bcorrect\b',
+        r'\btrue\b',
+    ]
+
+    no_patterns = [
+        r'\bno\b',
+        r'\banswer is no\b',
+        r'\bnegative\b',
+        r'\bincorrect\b',
+        r'\bfalse\b',
+    ]
+
+    # Count occurrences
+    yes_count = sum(1 for p in yes_patterns if re.search(p, text_lower))
+    no_count = sum(1 for p in no_patterns if re.search(p, text_lower))
+
+    # Prefer early occurrence (first sentence)
+    first_sentence = text_lower.split('.')[0] if '.' in text_lower else text_lower
+
+    if re.search(r'\byes\b', first_sentence):
+        return "yes"
+    if re.search(r'\bno\b', first_sentence):
+        return "no"
+
+    # Fall back to counts
+    if yes_count > no_count:
+        return "yes"
+    if no_count > yes_count:
+        return "no"
+
+    # Uncertain - return normalized original
+    return normalize_text(text)
 
 
 def extract_claims(
@@ -300,7 +356,14 @@ def run_eval(
                 if i in sset and j in sset and float(v) > tau
             )
 
-        norm = normalize_text if em_normalize else (lambda x: x.strip())
+        # Dataset-specific normalization
+        if "strategy" in ds_name:
+            # StrategyQA: extract yes/no tokens
+            norm = extract_yes_no if em_normalize else (lambda x: x.strip())
+        else:
+            # TruthfulQA and others: generic normalization
+            norm = normalize_text if em_normalize else (lambda x: x.strip())
+
         raw_ok = norm(raw) == norm(gold)
         greedy_ok = norm(greedy_out) == norm(gold)
         falcon_ok = norm(falcon_out) == norm(gold)

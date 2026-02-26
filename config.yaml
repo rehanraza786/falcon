@@ -2,21 +2,21 @@
 # Core switches
 # -------------------------
 llm:
-  enabled: false
+  enabled: true
   provider: openai   # openai | anthropic | hf | vllm_http
 
 # -------------------------
 # Provider-specific configs
 # -------------------------
 openai:
-  model: gpt-4.1-mini
+  model: gpt-4o-mini
   # IMPORTANT: Do NOT commit API keys.
   # Set OPENAI_API_KEY in your environment (preferred) or provide it here locally.
   api_key: null
   base_url: null             # optional (Azure/proxy)
-  temperature: 0.2
+  temperature: 0.7           # Balanced temperature for natural responses
   max_tokens: 256
-  request_logprobs: false
+  request_logprobs: true
   top_logprobs: 0
 
 anthropic:
