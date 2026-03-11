@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-import re
 import logging
+import re
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
-logger = logging.getLogger(__name__)
-
 from falcon.adapters import TruthfulQAAdapter, StrategyQAAdapter
 from falcon.llm import LLM, UnifiedScorer
+from falcon.metrics import compute_all_metrics
 from falcon.models import NLIJudge, normalize_weight
 from falcon.rewriter import RewriteConfig, rewrite_claims
+from falcon.self_reflect import SelfReflectConfig, run_self_reflection
 from falcon.solver import FalconSolver
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -29,7 +31,6 @@ class FalconRunStats:
 
 
 def normalize_text(s: str) -> str:
-    """Generic text normalization for exact match."""
     s = s.strip().lower()
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"[^a-z0-9\s]", "", s)
@@ -37,57 +38,40 @@ def normalize_text(s: str) -> str:
 
 
 def extract_yes_no(text: str) -> str:
-    """Extract yes/no answer from text for StrategyQA.
-
-    Looks for explicit yes/no tokens, handling common patterns like:
-    - "Yes, because..."
-    - "The answer is no."
-    - "No."
-
-    Returns: "yes", "no", or original text if unclear.
-    """
     text_lower = text.strip().lower()
 
-    # Direct single-word answers
     if text_lower in ("yes", "no"):
         return text_lower
 
-    # Look for explicit patterns
     yes_patterns = [
-        r'\byes\b',
-        r'\banswer is yes\b',
-        r'\baffirmative\b',
-        r'\bcorrect\b',
-        r'\btrue\b',
+        r"\byes\b",
+        r"\banswer is yes\b",
+        r"\baffirmative\b",
+        r"\bcorrect\b",
+        r"\btrue\b",
     ]
-
     no_patterns = [
-        r'\bno\b',
-        r'\banswer is no\b',
-        r'\bnegative\b',
-        r'\bincorrect\b',
-        r'\bfalse\b',
+        r"\bno\b",
+        r"\banswer is no\b",
+        r"\bnegative\b",
+        r"\bincorrect\b",
+        r"\bfalse\b",
     ]
 
-    # Count occurrences
     yes_count = sum(1 for p in yes_patterns if re.search(p, text_lower))
     no_count = sum(1 for p in no_patterns if re.search(p, text_lower))
 
-    # Prefer early occurrence (first sentence)
-    first_sentence = text_lower.split('.')[0] if '.' in text_lower else text_lower
-
-    if re.search(r'\byes\b', first_sentence):
+    first_sentence = text_lower.split(".")[0] if "." in text_lower else text_lower
+    if re.search(r"\byes\b", first_sentence):
         return "yes"
-    if re.search(r'\bno\b', first_sentence):
+    if re.search(r"\bno\b", first_sentence):
         return "no"
 
-    # Fall back to counts
     if yes_count > no_count:
         return "yes"
     if no_count > yes_count:
         return "no"
 
-    # Uncertain - return normalized original
     return normalize_text(text)
 
 
@@ -111,7 +95,11 @@ def extract_claims(
 
         parts = [sent]
         if split_on_conjunctions:
-            parts = re.split(r"\s+(?:and|but|while|although|however)\s+", sent, flags=re.IGNORECASE)
+            parts = re.split(
+                r"\s+(?:and|but|while|although|however)\s+",
+                sent,
+                flags=re.IGNORECASE,
+            )
 
         for p in parts:
             p = p.strip()
@@ -128,7 +116,7 @@ def compute_claim_weights(
     claims: List[str],
     llm: Optional[LLM],
     weight_source: str = "auto",
-    default_weight: float = 1.0
+    default_weight: float = 1.0,
 ) -> List[float]:
     if not claims:
         return []
@@ -148,7 +136,7 @@ def compute_claim_weights(
 def build_pairwise_P(
     nli: NLIJudge,
     claims: List[str],
-    max_pairwise: int = 496
+    max_pairwise: int = 496,
 ) -> Dict[Tuple[int, int], float]:
     n = len(claims)
     if n <= 1:
@@ -179,14 +167,6 @@ def greedy_filter_claims(
     P: Dict[Tuple[int, int], float],
     tau: float,
 ) -> List[int]:
-    """Simple baseline: greedily keep high-weight claims while avoiding contradictions.
-
-    This is intentionally *not* optimal. It's a fast heuristic baseline that matches the
-    CS224N "greedy consistency filter" idea used in many proposals.
-
-    We sort by descending weight (stable tie-break by index) and add a claim if it does not
-    contradict any already-selected claim above the contradiction threshold `tau`.
-    """
     if not claims:
         return []
     if len(claims) != len(weights):
@@ -208,8 +188,24 @@ def greedy_filter_claims(
         if ok:
             selected.append(i)
 
-    # Return indices in original order for readability
     return sorted(selected)
+
+
+def count_selected_contradictions(
+    selected_indices: List[int],
+    P: Dict[Tuple[int, int], float],
+    tau: float,
+) -> int:
+    sset = set(selected_indices)
+    return sum(
+        1 for (i, j), v in P.items()
+        if i in sset and j in sset and float(v) > tau
+    )
+
+
+def _join_selected_claims(claims: List[str]) -> str:
+    cleaned = [c.strip() for c in claims if c and c.strip()]
+    return " ".join(cleaned).strip()
 
 
 def run_falcon_on_text(
@@ -219,8 +215,11 @@ def run_falcon_on_text(
     claim_cfg: Dict,
     llm: Optional[LLM] = None,
     rewrite_cfg: Optional[Dict] = None,
-) -> Tuple[str, FalconRunStats, Dict[Tuple[int, int], float], List[str], List[float]]:
+    question: Optional[str] = None,
+    self_reflect_cfg: Optional[Dict] = None,
+) -> Tuple[str, FalconRunStats, Dict[Tuple[int, int], float], List[str], List[float], Dict[str, Any]]:
     t0 = time.time()
+
     claims = extract_claims(
         text,
         split_on_conjunctions=bool(claim_cfg.get("split_on_conjunctions", True)),
@@ -229,12 +228,22 @@ def run_falcon_on_text(
     )
 
     if len(claims) <= 1:
+        output = text.strip()
+        extras = {
+            "selected_claim_indices": list(range(len(claims))),
+            "selected_claims": claims,
+            "greedy_selected_indices": list(range(len(claims))),
+            "greedy_selected_claims": claims,
+            "self_reflect_output": None,
+            "self_reflect_used": False,
+        }
         return (
-            text.strip(),
+            output,
             FalconRunStats(len(claims), 0, 0, 0, 0.0, time.time() - t0, False),
             {},
             claims,
             [1.0] * len(claims),
+            extras,
         )
 
     tau = float(solver_cfg.get("tau", 0.7))
@@ -243,7 +252,11 @@ def run_falcon_on_text(
     P = build_pairwise_P(nli, claims, max_pairwise)
     contra_before = sum(1 for v in P.values() if v > tau)
 
-    weights = compute_claim_weights(claims, llm, str(solver_cfg.get("weight_source", "auto")))
+    weights = compute_claim_weights(
+        claims,
+        llm,
+        str(solver_cfg.get("weight_source", "auto")),
+    )
 
     falcon_solver = FalconSolver(
         nli,
@@ -254,13 +267,12 @@ def run_falcon_on_text(
     )
 
     res = falcon_solver.solve(claims, weights, P)
-    selected_indices = set(res.selected_indices)
-    selected_claims = [claims[i] for i in res.selected_indices]
+    selected_indices = list(res.selected_indices)
+    selected_claims = [claims[i] for i in selected_indices]
+    contra_after = count_selected_contradictions(selected_indices, P, tau)
 
-    contra_after = sum(
-        1 for (i, j), v in P.items()
-        if i in selected_indices and j in selected_indices and v > tau
-    )
+    greedy_indices = greedy_filter_claims(claims, weights, P, tau)
+    greedy_claims = [claims[i] for i in greedy_indices]
 
     rewritten_text = None
     rewrite_cfg = rewrite_cfg or {}
@@ -271,9 +283,35 @@ def run_falcon_on_text(
             preserve_facts=bool(rewrite_cfg.get("preserve_facts", True)),
             max_output_tokens=int(rewrite_cfg.get("max_output_tokens", 200)),
         )
-        rewritten_text = rewrite_claims(selected_claims, llm, rcfg)
+        rewritten_text = rewrite_claims(
+            selected_claims,
+            llm,
+            rcfg,
+            question=question,
+        )
 
-    output = rewritten_text if rewritten_text else " ".join(selected_claims)
+    output = rewritten_text if rewritten_text else _join_selected_claims(selected_claims)
+
+    self_reflect_cfg = self_reflect_cfg or {}
+    self_reflect_output = None
+    self_reflect_used = False
+    if self_reflect_cfg.get("enabled", False) and llm and question:
+        s_cfg = SelfReflectConfig(
+            enabled=True,
+            max_output_tokens=int(self_reflect_cfg.get("max_output_tokens", 256)),
+            temperature=float(self_reflect_cfg.get("temperature", 0.2)),
+            instruction=self_reflect_cfg.get(
+                "instruction",
+                "Revise the answer to remove contradictions while preserving correctness.",
+            ),
+        )
+        self_reflect_output = run_self_reflection(
+            question=question,
+            answer=text,
+            llm=llm,
+            cfg=s_cfg,
+        )
+        self_reflect_used = bool(self_reflect_output)
 
     stats = FalconRunStats(
         n_claims=len(claims),
@@ -284,7 +322,17 @@ def run_falcon_on_text(
         total_seconds=time.time() - t0,
         rewritten=bool(rewritten_text),
     )
-    return output, stats, P, claims, weights
+
+    extras = {
+        "selected_claim_indices": selected_indices,
+        "selected_claims": selected_claims,
+        "greedy_selected_indices": greedy_indices,
+        "greedy_selected_claims": greedy_claims,
+        "self_reflect_output": self_reflect_output,
+        "self_reflect_used": self_reflect_used,
+    }
+
+    return output, stats, P, claims, weights, extras
 
 
 def run_eval(
@@ -297,11 +345,18 @@ def run_eval(
     em_normalize: bool = True,
     llm: Optional[LLM] = None,
     rewrite_cfg: Optional[Dict] = None,
+    self_reflect_cfg: Optional[Dict] = None,
+    provenance: Optional[Dict[str, Any]] = None,
 ) -> Dict:
-    results = {"dataset": dataset_name, "split": split, "examples": [], "aggregate": {}}
+    results: Dict[str, Any] = {
+        "dataset": dataset_name,
+        "split": split,
+        "examples": [],
+        "aggregate": {},
+        "provenance": provenance or {},
+    }
     ds_name = (dataset_name or "").lower()
 
-    # Always load via adapters (prevents dataset-script issues and keeps logic centralized)
     if "truthful" in ds_name:
         adapter = TruthfulQAAdapter(split=split)
     elif "strategy" in ds_name:
@@ -316,17 +371,29 @@ def run_eval(
     get_baseline = getattr(adapter, "get_baseline", lambda ex: "")
 
     n = min(int(max_examples), len(ds))
-    metrics = {
-        "em_raw": 0,
-        "em_greedy": 0,
-        "em_falcon": 0,
+    metrics_sum = {
+        "em_raw": 0.0,
+        "em_greedy": 0.0,
+        "em_falcon": 0.0,
+        "em_self_reflect": 0.0,
+        "token_f1_raw": 0.0,
+        "token_f1_greedy": 0.0,
+        "token_f1_falcon": 0.0,
+        "token_f1_self_reflect": 0.0,
+        "rougeL_raw": 0.0,
+        "rougeL_greedy": 0.0,
+        "rougeL_falcon": 0.0,
+        "rougeL_self_reflect": 0.0,
         "latency": 0.0,
         "solve": 0.0,
-        "cb": 0,
-        "ca_greedy": 0,
-        "ca_falcon": 0,
-        "rw": 0,
+        "cb": 0.0,
+        "ca_greedy": 0.0,
+        "ca_falcon": 0.0,
+        "rw": 0.0,
+        "sr": 0.0,
     }
+
+    tau = float(solver_cfg.get("tau", 0.7))
 
     logger.info("Running eval on %s (%d examples)", ds_name, n)
 
@@ -337,69 +404,97 @@ def run_eval(
 
         raw = llm.generate(q).text if llm else get_baseline(ex)
 
-        # Run FALCON (MILP)
-        falcon_out, stats, P, claims, weights = run_falcon_on_text(
-            raw, nli, solver_cfg, claim_cfg, llm, rewrite_cfg
+        falcon_out, stats, P, claims, weights, extras = run_falcon_on_text(
+            text=raw,
+            nli=nli,
+            solver_cfg=solver_cfg,
+            claim_cfg=claim_cfg,
+            llm=llm,
+            rewrite_cfg=rewrite_cfg,
+            question=q,
+            self_reflect_cfg=self_reflect_cfg,
         )
 
-        # Greedy baseline (uses the same P, claims, weights)
-        greedy_indices = greedy_filter_claims(claims, weights, P, float(solver_cfg.get("tau", 0.7)))
-        greedy_claims = [claims[i] for i in greedy_indices]
-        greedy_out = " ".join(greedy_claims).strip() if greedy_claims else raw.strip()
+        greedy_indices = extras["greedy_selected_indices"]
+        greedy_claims = extras["greedy_selected_claims"]
+        greedy_out = _join_selected_claims(greedy_claims) if greedy_claims else raw.strip()
+        greedy_contra = count_selected_contradictions(greedy_indices, P, tau)
 
-        greedy_contra = 0
-        if greedy_indices:
-            tau = float(solver_cfg.get("tau", 0.7))
-            sset = set(greedy_indices)
-            greedy_contra = sum(
-                1 for (i, j), v in P.items()
-                if i in sset and j in sset and float(v) > tau
-            )
+        self_reflect_out = extras.get("self_reflect_output") or raw
 
-        # Dataset-specific normalization
-        if "strategy" in ds_name:
-            # StrategyQA: extract yes/no tokens
-            norm = extract_yes_no if em_normalize else (lambda x: x.strip())
-        else:
-            # TruthfulQA and others: generic normalization
-            norm = normalize_text if em_normalize else (lambda x: x.strip())
+        raw_metrics = compute_all_metrics(raw, gold, dataset_name, em_normalize)
+        greedy_metrics = compute_all_metrics(greedy_out, gold, dataset_name, em_normalize)
+        falcon_metrics = compute_all_metrics(falcon_out, gold, dataset_name, em_normalize)
+        self_reflect_metrics = compute_all_metrics(self_reflect_out, gold, dataset_name, em_normalize)
 
-        raw_ok = norm(raw) == norm(gold)
-        greedy_ok = norm(greedy_out) == norm(gold)
-        falcon_ok = norm(falcon_out) == norm(gold)
+        metrics_sum["em_raw"] += raw_metrics["em"]
+        metrics_sum["em_greedy"] += greedy_metrics["em"]
+        metrics_sum["em_falcon"] += falcon_metrics["em"]
+        metrics_sum["em_self_reflect"] += self_reflect_metrics["em"]
 
-        metrics["em_raw"] += int(raw_ok)
-        metrics["em_greedy"] += int(greedy_ok)
-        metrics["em_falcon"] += int(falcon_ok)
-        metrics["latency"] += stats.total_seconds
-        metrics["solve"] += stats.solve_seconds
-        metrics["cb"] += stats.contradictions_before
-        metrics["ca_greedy"] += greedy_contra
-        metrics["ca_falcon"] += stats.contradictions_after
-        metrics["rw"] += int(stats.rewritten)
+        metrics_sum["token_f1_raw"] += raw_metrics["token_f1"]
+        metrics_sum["token_f1_greedy"] += greedy_metrics["token_f1"]
+        metrics_sum["token_f1_falcon"] += falcon_metrics["token_f1"]
+        metrics_sum["token_f1_self_reflect"] += self_reflect_metrics["token_f1"]
+
+        metrics_sum["rougeL_raw"] += raw_metrics["rougeL"]
+        metrics_sum["rougeL_greedy"] += greedy_metrics["rougeL"]
+        metrics_sum["rougeL_falcon"] += falcon_metrics["rougeL"]
+        metrics_sum["rougeL_self_reflect"] += self_reflect_metrics["rougeL"]
+
+        metrics_sum["latency"] += stats.total_seconds
+        metrics_sum["solve"] += stats.solve_seconds
+        metrics_sum["cb"] += stats.contradictions_before
+        metrics_sum["ca_greedy"] += greedy_contra
+        metrics_sum["ca_falcon"] += stats.contradictions_after
+        metrics_sum["rw"] += int(stats.rewritten)
+        metrics_sum["sr"] += int(bool(extras.get("self_reflect_used", False)))
 
         results["examples"].append({
-            "q": q,
+            "index": i,
+            "question": q,
             "gold": gold,
             "raw": raw,
             "greedy": greedy_out,
             "falcon": falcon_out,
-            "em_greedy": int(greedy_ok),
-            "em_falcon": int(falcon_ok),
+            "self_reflect": self_reflect_out,
+            "raw_metrics": raw_metrics,
+            "greedy_metrics": greedy_metrics,
+            "falcon_metrics": falcon_metrics,
+            "self_reflect_metrics": self_reflect_metrics,
+            "claims": claims,
+            "weights": weights,
             "stats": stats.__dict__,
+            "selected_claim_indices": extras["selected_claim_indices"],
+            "selected_claims": extras["selected_claims"],
+            "greedy_selected_indices": extras["greedy_selected_indices"],
+            "greedy_selected_claims": extras["greedy_selected_claims"],
         })
 
     if n > 0:
         results["aggregate"] = {
-            "em_raw": metrics["em_raw"] / n,
-            "em_greedy": metrics["em_greedy"] / n,
-            "em_falcon": metrics["em_falcon"] / n,
-            "avg_latency_s": metrics["latency"] / n,
-            "avg_solve_s": metrics["solve"] / n,
-            "avg_contradictions_before": metrics["cb"] / n,
-            "avg_contradictions_after_greedy": metrics["ca_greedy"] / n,
-            "avg_contradictions_after_falcon": metrics["ca_falcon"] / n,
-            "rewrite_rate": metrics["rw"] / n,
+            "em_raw": metrics_sum["em_raw"] / n,
+            "em_greedy": metrics_sum["em_greedy"] / n,
+            "em_falcon": metrics_sum["em_falcon"] / n,
+            "em_self_reflect": metrics_sum["em_self_reflect"] / n,
+            "token_f1_raw": metrics_sum["token_f1_raw"] / n,
+            "token_f1_greedy": metrics_sum["token_f1_greedy"] / n,
+            "token_f1_falcon": metrics_sum["token_f1_falcon"] / n,
+            "token_f1_self_reflect": metrics_sum["token_f1_self_reflect"] / n,
+            "rougeL_raw": metrics_sum["rougeL_raw"] / n,
+            "rougeL_greedy": metrics_sum["rougeL_greedy"] / n,
+            "rougeL_falcon": metrics_sum["rougeL_falcon"] / n,
+            "rougeL_self_reflect": metrics_sum["rougeL_self_reflect"] / n,
+            "avg_latency_s": metrics_sum["latency"] / n,
+            "avg_solve_s": metrics_sum["solve"] / n,
+            "avg_contradictions_before": metrics_sum["cb"] / n,
+            "avg_contradictions_after_greedy": metrics_sum["ca_greedy"] / n,
+            "avg_contradictions_after_falcon": metrics_sum["ca_falcon"] / n,
+            "rewrite_rate": metrics_sum["rw"] / n,
+            "self_reflect_rate": metrics_sum["sr"] / n,
+            "tau": tau,
+            "lambda_penalty": float(solver_cfg.get("lambda_penalty", 1.0)),
+            "solver_mode": str(solver_cfg.get("mode", "hard")),
         }
 
     return results

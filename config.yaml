@@ -3,7 +3,7 @@
 # -------------------------
 llm:
   enabled: true
-  provider: openai   # openai | anthropic | hf | vllm_http
+  provider: hf
 
 # -------------------------
 # Provider-specific configs
@@ -29,10 +29,10 @@ anthropic:
   max_tokens: 256
 
 hf:
-  model_id: gpt2
-  device: auto               # auto | cpu | cuda
-  dtype: auto                # auto | float16 | bfloat16 | float32
-  temperature: 0.2
+  model_id: google/flan-t5-base
+  device: auto
+  dtype: auto
+  temperature: 0.7
   max_new_tokens: 256
   do_sample: true
   enable_scoring: true
@@ -79,7 +79,7 @@ solver:
 # Rewrite step (optional)
 # -------------------------
 rewrite:
-  enabled: false
+  enabled: true
   style: concise             # concise | neutral | detailed
   preserve_facts: true
   max_output_tokens: 200
@@ -92,3 +92,9 @@ eval:
   split: test                # validation | test
   max_examples: 50
   em_normalize: true
+
+self_reflect:
+  enabled: true
+  max_output_tokens: 256
+  temperature: 0.2
+  instruction: "Revise the answer to remove contradictions while preserving correctness."
