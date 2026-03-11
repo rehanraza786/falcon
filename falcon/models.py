@@ -20,7 +20,6 @@ class NLIJudge:
     def __init__(self, model_name: str = "cross-encoder/nli-deberta-v3-base",
                  device: str = "auto", batch_size: int = 8):
 
-        # --- FIX: Resolve 'auto' to actual device ---
         if device == "auto":
             if torch.cuda.is_available():
                 device = "cuda"

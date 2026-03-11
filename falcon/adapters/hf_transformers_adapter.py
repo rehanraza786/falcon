@@ -122,5 +122,5 @@ class HFTransformersAdapter:
             return None
 
     def score_tokens(self, text: str) -> Optional[List[float]]:
-        # Optional token-level scoring not implemented robustly here
+        # Optional token-level scoring not implemented here
         return None

@@ -11,7 +11,6 @@ import numpy as np
 def set_seed(seed: Optional[int]) -> None:
     """Set RNG seeds for reproducibility.
 
-    If `seed` is None, this is a no-op.
     """
     if seed is None:
         return

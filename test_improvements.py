@@ -115,13 +115,13 @@ def test_solver_modes():
 
     # Hard mode
     solver_cfg_hard = {"mode": "hard", "tau": 0.7}
-    output_hard, stats_hard, _, _, _ = run_falcon_on_text(
+    output_hard, stats_hard, _, _, _, _ = run_falcon_on_text(
         text, nli, solver_cfg_hard, claim_cfg, None, {}
     )
 
     # Soft mode
     solver_cfg_soft = {"mode": "soft", "tau": 0.7, "lambda_penalty": 1.0}
-    output_soft, stats_soft, _, _, _ = run_falcon_on_text(
+    output_soft, stats_soft, _, _, _, _ = run_falcon_on_text(
         text, nli, solver_cfg_soft, claim_cfg, None, {}
     )
 

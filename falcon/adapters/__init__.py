@@ -1,8 +1,3 @@
-# =========================
-# TruthfulQA Adapter
-# =========================
-# falcon/adapters.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,16 +11,6 @@ class TruthfulQAAdapter:
     split: str = "validation"
 
     def load(self):
-        """
-        Loads TruthfulQA robustly across HuggingFace `datasets` versions.
-
-        If the local cache was created with an older datasets version that used
-        the deprecated `List` feature type, newer versions can throw:
-            ValueError: Feature type 'List' not found ...
-
-        We recover by forcing a re-download (rebuilding the cache with the
-        current schema types like Sequence/LargeList).
-        """
         try:
             return load_dataset(
                 "truthful_qa",
@@ -50,11 +35,6 @@ class TruthfulQAAdapter:
         return f"{q}"
 
     def get_gold(self, ex: Dict[str, Any]) -> str:
-        """
-        For generation, there isn't a single canonical gold string for EM in the
-        same way as multiple-choice tasks. Many pipelines use 'best_answer' for
-        a simple reference string.
-        """
         return ex.get("best_answer", "")
 
     def get_baseline(self, ex: Dict[str, Any]) -> str:
@@ -68,7 +48,6 @@ class StrategyQAAdapter:
     split: str = "test"
 
     def load(self):
-        # StrategyQA commonly only provides 'test' in some hosted variants
         return load_dataset(
             "wics/strategy-qa",
             split=self.split,
@@ -87,9 +66,6 @@ class StrategyQAAdapter:
     def get_baseline(self, ex: Dict[str, Any]) -> str:
         return ""
 
-# =========================
-# JSONL Adapter (Custom Data)
-# =========================
 
 @dataclass
 class JSONLAdapter:
