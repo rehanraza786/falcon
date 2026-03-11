@@ -1,4 +1,4 @@
-# FALCON: Factual-Aware Logical Consistency Optimization for LLM Outputs
+# FALCON: Factual-Aware Logical Consistency for Large Language Model Outputs via NLI-Guided Mixed Integer Optimization
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -17,18 +17,25 @@ This project was developed as a **custom final project for Stanford CS224N (Wint
 
 ## 🚀 TL;DR
 
-**Problem:** LLMs generate self-contradictory text that reduces trustworthiness  
-**Solution:** Post-hoc MILP-based filtering that removes contradictions optimally  
-**Key Innovation:** Global optimization (not greedy) + works with any LLM (no retraining)
+**Problem:** LLMs can generate internally contradictory answers.  
+**Approach:** FALCON applies contradiction-aware post-processing using NLI scoring and MILP-based claim selection.  
+**Key idea:** Instead of relying only on greedy filtering or self-reflection, FALCON performs global consistency-aware selection over extracted claims.
+
+**Main results (current saved runs):**
+- **StrategyQA:** EM improves from **0.30** (raw) to **0.40** (FALCON)
+- **TruthfulQA:** EM remains **0.00**, but FALCON improves **token-F1** from **0.1665** to **0.2093** and **ROUGE-L** from **0.1526** to **0.1920**
+- On both main runs, measured contradictions drop to **0.0** after FALCON filtering
+
+**Takeaway:** FALCON is a working contradiction-aware post-processing framework, but its effectiveness depends on the richness of the upstream generation and the evaluation metric.
 
 **Quick Start:**
 ```bash
 pip install -r requirements.txt
 python main.py --mode single --text "Paris is in France. Paris is in Germany." --logic hard
-# Output: Removes contradictory claims, keeps consistent ones
+# Output: Filters contradictory claims under the selected consistency objective
 ```
 
-**Results:** ~90% contradiction reduction on benchmarks, <1s solve time, 3600+ LOC implementation
+**Results:** Main saved runs show contradiction reduction to 0.0 on StrategyQA and TruthfulQA, with downstream gains depending on dataset and configuration.
 
 ---
 
@@ -78,12 +85,11 @@ python main.py --mode single --text "Paris is in France. Paris is in Germany." -
 3. **Optimizes** claim selection via MILP to maximize consistency while preserving information
 4. **Reconstructs** coherent output from the filtered claim set
 
-**Key Innovations:**
-- 🎯 **Global Optimization**: MILP guarantees finding the optimal consistent subset (vs. greedy heuristics)
-- ⚡ **Efficient**: Solves in <1s per example on CPU for typical inputs
-- 🔌 **Modular**: Works with any LLM provider (OpenAI, Anthropic, HuggingFace, vLLM)
-- 📊 **Validated**: Comprehensive evaluation on StrategyQA and TruthfulQA benchmarks
-- 🔬 **Extensible**: Supports both hard constraints and soft penalty modes
+**Key properties:**
+- **Global optimization:** MILP finds an optimal subset under the chosen consistency objective
+- **Modular design:** Supports multiple LLM providers, including OpenAI, Anthropic, HuggingFace, and vLLM-based setups
+- **Benchmark evaluation:** Tested on StrategyQA and TruthfulQA
+- **Flexible modes:** Supports hard constraints, soft penalties, greedy filtering, rewriting, and self-reflection baselines
 
 **Technical Stack:** PyTorch, HuggingFace Transformers, PuLP (MILP solver), Python 3.9+
 
@@ -99,13 +105,13 @@ Rather than retraining or fine-tuning models, FALCON operates **post hoc**, trea
 
 ## ✨ Key Features
 
-- **🎯 Post-hoc Filtering** — Works with any LLM without retraining or fine-tuning
-- **🧮 Optimal Selection** — MILP solver finds globally consistent claim subsets (~3600 LOC implementation)
-- **⚡ Fast & Efficient** — <1s solve time per example on CPU (tested on M-series Macs and Linux)
+- **🎯 Post-hoc Filtering** — Designed to work with multiple LLM providers without retraining or fine-tuning
+- **🧮 Global Selection** — MILP solver finds an optimal claim subset under the chosen consistency objective
+- **⚡ Efficient Optimization** — Solver-only time is typically sub-second per example; total runtime depends heavily on LLM generation and NLI inference
 - **🔌 Multi-Provider Support** — OpenAI (GPT-4o-mini), Anthropic (Claude), HuggingFace Transformers, vLLM HTTP
 - **📊 Dual Modes** — Hard constraints (strict) or soft penalties (flexible trade-offs)
-- **🔍 NLI-Powered** — State-of-the-art contradiction detection via `cross-encoder/nli-deberta-v3-base`
-- **📈 Comprehensive Evaluation** — Greedy baseline + FALCON on StrategyQA & TruthfulQA with ablation studies
+- **🔍 NLI-Powered** — Pretrained contradiction detection via `cross-encoder/nli-deberta-v3-base`
+- **📈 Evaluated** — Tested with greedy baseline + FALCON on StrategyQA & TruthfulQA with ablation studies
 - **🛠️ Flexible Configuration** — YAML-based configuration for all parameters (solver, NLI, LLM, extraction)
 - **🔬 Research-Ready** — Includes ablation study tools, qualitative audit scripts, and visualization utilities
 - **📦 Library & CLI** — Use as a Python library or command-line tool
@@ -118,7 +124,7 @@ Given an LLM-generated response:
 
 1. **Claim Extraction**
    - Decompose output into atomic claims using sentence boundaries and conjunction heuristics.
-   - Cap extraction to **≤10 claims** for tractability.
+   - In the main configs, extraction is capped at **10 claims for StrategyQA** and **15 claims for TruthfulQA**.
 
 2. **Pairwise Contradiction Scoring**
    - Use a pretrained NLI cross-encoder  
@@ -135,8 +141,8 @@ Given an LLM-generated response:
      - **Soft mode**: allow contradictions with a penalty.
 
 5. **Optional Rewrite**
-   - Selected claims may be rewritten into a fluent response using an LLM
-     (disabled during core evaluation).
+   - Selected claims may be rewritten into a fluent response using an LLM.
+   - In the strongest saved runs, rewriting is active and contributes to the final pipeline behavior.
 
 ### Mathematical Formulation
 
@@ -171,7 +177,7 @@ Where:
 - **B1 — Greedy Consistency Filter**
 - **B2 — Solver without rewrite (ablation)**
 
-FALCON’s MILP formulation provides a **globally optimal** alternative to greedy filtering.
+FALCON’s MILP formulation provides a globally optimized alternative to greedy filtering under the chosen consistency objective.
 
 ---
 
@@ -453,39 +459,33 @@ python create_output_charts.py
 bash run_ablation.sh
 ```
 ---
-
 ## Performance Results
 
-### Key Findings
+### Main Findings
 
-**StrategyQA (Binary QA):**
-- Contradiction reduction: ~90% reduction vs. raw output
-- Exact Match: Comparable to baseline (filtering preserves accuracy)
-- Solve time: <0.1s per example (MILP optimization)
-- Total latency: ~0.5s per example (dominated by NLI)
+**StrategyQA (main run):**
+- EM improves from **0.30** (raw) to **0.40** (FALCON)
+- Greedy remains at **0.30**
+- Self-reflection reaches **0.32**
+- Average contradictions drop from **2.04** to **0.0**
 
-**TruthfulQA (Open-ended QA):**
-- Contradiction density: Higher with free-form prompting
-- Filtering effectiveness: 80-100% contradiction removal
-- Information preservation: Avg. 7/10 claims retained
-- Qualitative improvement: More coherent outputs
+**TruthfulQA (main run):**
+- EM remains **0.00** for all methods
+- FALCON improves **token-F1** from **0.1665** to **0.2093**
+- FALCON improves **ROUGE-L** from **0.1526** to **0.1920**
+- Average contradictions drop from **2.34** to **0.0**
 
-**Ablation Studies:**
-- **Tau sensitivity**: τ=0.7 offers best accuracy/coverage trade-off
-- **Claim cap scaling**: Performance stable up to 20 claims
-- **Hard vs. Soft**: Hard mode slightly faster; soft mode retains more information
-- **Greedy vs. MILP**: MILP finds 15-20% better solutions on average
+**Variant and ablation results:**
+- Several variant settings also show gains for FALCON over raw generation
+- The strongest saved ablation reaches **0.50 EM** in soft mode at **τ = 0.8, λ = 1.0**, though performance remains sensitive to generation and rewrite settings
+- Performance remains sensitive to generation quality, rewrite behavior, and solver configuration
 
-### Benchmark Metrics
+### Interpretation
 
-| Metric | Raw LLM | Greedy | FALCON (Hard) | FALCON (Soft) |
-|--------|---------|--------|---------------|---------------|
-| **StrategyQA EM** | 0.42 | 0.38 | 0.40 | 0.41 |
-| **Contradictions** | 2.3 | 0.8 | 0.1 | 0.3 |
-| **Claims Retained** | 10.0 | 6.5 | 7.2 | 8.1 |
-| **Solve Time (s)** | - | 0.05 | 0.08 | 0.12 |
-
-*Note: Results based on 50-example samples. Actual numbers may vary depending on LLM choice and configuration.*
+The current results support a more precise claim than earlier drafts:
+- FALCON can improve downstream quality when the upstream generator produces sufficiently rich multi-claim outputs
+- The method is not a universal fix for all reasoning errors
+- Exact-match gains are clearest on StrategyQA, while TruthfulQA is better captured by overlap-based metrics
 
 ### Visualization
 
@@ -590,8 +590,7 @@ for example in dataset:
 - **Zero scores** typically indicate generation was disabled (`llm.enabled=false`).
 - Contradiction counts only appear when ≥2 claims are extracted.
 - TruthfulQA results should be interpreted **qualitatively**.
-- MILP is expected to reduce contradictions more than greedy filtering,
-  sometimes at slight cost to EM.
+- MILP is designed to reduce contradictions through global selection; in the current saved runs, downstream gains over greedy filtering depend on dataset and configuration
 
 ### Performance Metrics Explained
 
@@ -602,11 +601,11 @@ for example in dataset:
 **Contradiction Reduction:**
 - Measures how many contradictory claim pairs remain after filtering
 - Lower is better
-- FALCON typically achieves 80-100% reduction vs. raw output
+In the main saved runs, FALCON reduces measured contradiction counts to 0.0 under the current NLI-based evaluation
 
 **Latency:**
-- `avg_latency_s`: Total time per example (claim extraction + NLI + solver)
-- `avg_solve_s`: MILP solver time only (typically <0.5s per example)
+- `avg_latency_s`: Total time per example (claim extraction + NLI + solver + optional LLM rewrite)
+- `avg_solve_s`: MILP solver time only (typically <0.1s per example)
 
 ### Example Output Structure
 ```json
@@ -614,14 +613,14 @@ for example in dataset:
   "dataset": "strategyqa",
   "split": "test",
   "aggregate": {
-    "em_raw": 0.42,
-    "em_greedy": 0.38,
-    "em_falcon": 0.40,
-    "avg_contradictions_before": 2.3,
-    "avg_contradictions_after_greedy": 0.8,
-    "avg_contradictions_after_falcon": 0.1,
-    "avg_latency_s": 1.24,
-    "avg_solve_s": 0.12
+    "em_raw": "<exact_match_score>",
+    "em_greedy": "<greedy_em_score>",
+    "em_falcon": "<falcon_em_score>",
+    "avg_contradictions_before": "<initial_contradictions>",
+    "avg_contradictions_after_greedy": "<greedy_contradictions>",
+    "avg_contradictions_after_falcon": "<falcon_contradictions>",
+    "avg_latency_s": "<total_time_per_example>",
+    "avg_solve_s": "<solver_time_only>"
   }
 }
 ```
@@ -646,7 +645,7 @@ for example in dataset:
 A: No! FALCON can work on pre-generated text. Set `llm.enabled: false` in `config.yaml` to disable generation and use `--mode single` with `--text` to process existing text.
 
 **Q: How is FALCON different from other consistency methods?**  
-A: FALCON uses MILP optimization for **globally optimal** solutions, unlike greedy heuristics that may miss better combinations. It also works post-hoc without model retraining, making it compatible with any LLM.
+A: FALCON uses MILP optimization for **globally optimal** solutions, unlike greedy heuristics that may miss better combinations. It also works post-hoc without model retraining, making it compatible with multiple LLM providers and generation setups.
 
 **Q: What's the difference between hard and soft mode?**  
 A: 
@@ -846,9 +845,11 @@ python -c "import pulp; print(pulp.listSolvers(onlyAvailable=True))"
 **Performance Benchmarks:**
 | Setup | NLI Inference | MILP Solve | Total/Example |
 |-------|---------------|------------|---------------|
-| M1 Mac (MPS) | ~0.2s | <0.1s | ~0.5s |
-| Linux CPU | ~0.5s | <0.1s | ~0.8s |
-| CUDA GPU | ~0.05s | <0.1s | ~0.3s |
+| M1 Mac (MPS) | Fast | <0.1s | Sub-second |
+| Linux CPU | Moderate | <0.1s | ~1-2s |
+| CUDA GPU | Fastest | <0.1s | Sub-second |
+
+*Note: Times exclude LLM generation which dominates total latency when enabled*
 
 **Scalability:**
 - ✅ Default: ≤10 claims → ≤45 pairwise constraints
@@ -869,7 +870,6 @@ python -c "import pulp; print(pulp.listSolvers(onlyAvailable=True))"
 
 ## 📂 Project Structure
 
-**Total Lines of Code:** ~3,600 Python LOC
 
 ```
 falcon/
@@ -1116,12 +1116,11 @@ If you use FALCON in your research or reference this project, please cite:
 ```bibtex
 @misc{azam2026falcon,
   author = {Azam, Rehan},
-  title = {FALCON: Factual-Aware Logical Consistency Optimization for LLM Outputs},
+  title = {FALCON: Factual-Aware Logical Consistency for Large Language Model Outputs via NLI-Guided Mixed Integer Optimization},
   year = {2026},
   publisher = {GitHub},
   journal = {Stanford CS224N Final Project},
-  howpublished = {\url{https://github.com/rehanraza786/falcon}},
-  note = {A post-generation filtering framework using MILP optimization for contradiction resolution in LLM outputs}
+  howpublished = {\url{https://github.com/rehanraza786/falcon}}
 }
 ```
 
