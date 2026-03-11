@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import re
+import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
 from tqdm import tqdm
 
 from falcon.adapters import TruthfulQAAdapter, StrategyQAAdapter
 from falcon.llm import LLM, UnifiedScorer
 from falcon.metrics import compute_all_metrics
-from falcon.models import NLIJudge, normalize_weight
+from falcon.models import NLIJudge, normalize_weight, load_nli_judge
 from falcon.rewriter import RewriteConfig, rewrite_claims
 from falcon.self_reflect import SelfReflectConfig, run_self_reflection
 from falcon.solver import FalconSolver
+from falcon.utils import set_seed, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -499,3 +505,176 @@ def run_eval(
         }
 
     return results
+
+
+def load_llm_from_config(cfg: dict) -> Optional[LLM]:
+    """Load LLM adapter from configuration."""
+    llm_switch = cfg.get("llm", {}) or {}
+    if not llm_switch.get("enabled", False):
+        return None
+
+    provider = (llm_switch.get("provider") or "").strip().lower()
+    if not provider:
+        return None
+
+    provider_cfg = cfg.get(provider, {}) or {}
+    if not provider_cfg:
+        return None
+
+    if provider == "openai":
+        from falcon.adapters.openai_adapter import OpenAIAdapter, OpenAIConfig
+        return OpenAIAdapter(OpenAIConfig(
+            model=provider_cfg["model"],
+            api_key=provider_cfg.get("api_key"),
+            base_url=provider_cfg.get("base_url"),
+            temperature=float(provider_cfg.get("temperature", 0.7)),
+            max_tokens=int(provider_cfg.get("max_tokens", 256)),
+            request_logprobs=bool(provider_cfg.get("request_logprobs", False)),
+            top_logprobs=int(provider_cfg.get("top_logprobs", 0)),
+        ))
+
+    if provider == "anthropic":
+        from falcon.adapters.anthropic_adapter import AnthropicAdapter, AnthropicConfig
+        return AnthropicAdapter(AnthropicConfig(
+            model=provider_cfg["model"],
+            api_key=provider_cfg.get("api_key"),
+            base_url=provider_cfg.get("base_url"),
+            temperature=float(provider_cfg.get("temperature", 0.7)),
+            max_tokens=int(provider_cfg.get("max_tokens", 256)),
+        ))
+
+    if provider == "hf":
+        from falcon.adapters.hf_transformers_adapter import HFTransformersAdapter, HFConfig
+        return HFTransformersAdapter(HFConfig(
+            model_id=provider_cfg["model_id"],
+            device=provider_cfg.get("device", "auto"),
+            dtype=provider_cfg.get("dtype", "auto"),
+            temperature=float(provider_cfg.get("temperature", 0.7)),
+            max_new_tokens=int(provider_cfg.get("max_new_tokens", 256)),
+            do_sample=bool(provider_cfg.get("do_sample", True)),
+            enable_scoring=bool(provider_cfg.get("enable_scoring", True)),
+        ))
+
+    if provider == "vllm_http":
+        from falcon.adapters.vllm_http_adapter import VLLMHTTPAdapter, VLLMHTTPConfig
+        return VLLMHTTPAdapter(VLLMHTTPConfig(
+            base_url=provider_cfg["base_url"],
+            model=provider_cfg["model"],
+            api_key=provider_cfg.get("api_key"),
+            temperature=float(provider_cfg.get("temperature", 0.7)),
+            max_tokens=int(provider_cfg.get("max_tokens", 256)),
+            request_logprobs=bool(provider_cfg.get("request_logprobs", False)),
+            top_logprobs=int(provider_cfg.get("top_logprobs", 0)),
+        ))
+
+    return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="FALCON: Factual-Aware Logical Consistency Optimization")
+    parser.add_argument("--mode", required=True, choices=["single", "eval"], help="single: process one text, eval: evaluate on dataset")
+    parser.add_argument("--text", type=str, help="Input text for single mode")
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to config YAML file")
+    parser.add_argument("--logic", type=str, choices=["hard", "soft"], help="Override solver mode (hard or soft)")
+    parser.add_argument("--out", type=str, help="Output JSON path")
+    parser.add_argument("--seed", type=int, help="Random seed for reproducibility")
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (use -vv for DEBUG)")
+    parser.add_argument("--log-file", type=str, help="Write logs to file")
+
+    args = parser.parse_args()
+
+    # Setup logging
+    setup_logging(verbosity=args.verbose, log_file=args.log_file)
+
+    # Set seed
+    if args.seed is not None:
+        set_seed(args.seed)
+        logger.info("Set random seed: %d", args.seed)
+
+    # Load config
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    # Override logic mode if specified
+    if args.logic:
+        cfg.setdefault("solver", {})["mode"] = args.logic
+        logger.info("Override solver mode: %s", args.logic)
+
+    # Load NLI judge
+    nli_cfg = cfg.get("nli", {}) or {}
+    nli = load_nli_judge(
+        nli_cfg.get("model_name", "cross-encoder/nli-deberta-v3-base"),
+        device=nli_cfg.get("device", "auto")
+    )
+
+    # Load LLM if enabled
+    llm = load_llm_from_config(cfg)
+
+    if args.mode == "single":
+        # Single text mode
+        if not args.text:
+            logger.error("--text is required for single mode")
+            return 1
+
+        filtered, stats, P, claims, weights, extras = run_falcon_on_text(
+            text=args.text,
+            nli=nli,
+            solver_cfg=cfg.get("solver", {}),
+            claim_cfg=cfg.get("claims", {}),
+            llm=llm,
+            rewrite_cfg=cfg.get("rewrite", {}),
+        )
+
+        result = {
+            "input": args.text,
+            "output": filtered,
+            "claims": claims,
+            "selected_claims": extras["selected_claims"],
+            "stats": stats.__dict__,
+        }
+
+        if args.out:
+            Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+            with open(args.out, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2)
+            print(f"Saved result to {args.out}")
+        else:
+            print("\n" + "="*60)
+            print(f"Selected claims ({len(extras['selected_claims'])}/{len(claims)}):")
+            for i, claim in enumerate(extras["selected_claims"], 1):
+                print(f"  {i}. {claim}")
+            print(f"\nContradictions removed: {stats.contradictions_before - stats.contradictions_after}")
+            print(f"Solve time: {stats.solve_seconds:.3f}s")
+            print("="*60)
+
+    elif args.mode == "eval":
+        # Evaluation mode
+        ev = cfg.get("eval", {}) or {}
+        results = run_eval(
+            nli=nli,
+            solver_cfg=cfg.get("solver", {}),
+            claim_cfg=cfg.get("claims", {}),
+            dataset_name=ev.get("dataset", "truthfulqa"),
+            split=ev.get("split", "validation"),
+            max_examples=int(ev.get("max_examples", 50)),
+            em_normalize=bool(ev.get("em_normalize", True)),
+            llm=llm,
+            rewrite_cfg=cfg.get("rewrite", {}),
+            self_reflect_cfg=cfg.get("self_reflect", {}),
+        )
+
+        out_path = args.out or "results.json"
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+
+        print(f"\nSaved results to {out_path}")
+        print("\nAggregate Metrics:")
+        print(json.dumps(results["aggregate"], indent=2))
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+

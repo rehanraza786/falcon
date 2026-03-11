@@ -14,7 +14,7 @@ import yaml
 from falcon.models import load_nli_judge
 from falcon.pipeline import run_falcon_on_text, run_eval
 from falcon.llm import LLM
-from main import load_llm_from_config  # reuse the factory for consistency
+from run_experiments import load_llm_from_config  # reuse the factory for consistency
 
 
 def load_config(path: str) -> dict:
@@ -31,7 +31,7 @@ def run_single(cfg_path: str, text: str) -> dict:
     nli = load_nli_judge(nli_cfg["model_name"], device=nli_cfg.get("device", "auto"))
     llm: Optional[LLM] = load_llm_from_config(cfg)
 
-    filtered, stats, P, claims, weights = run_falcon_on_text(
+    filtered, stats, P, claims, weights, extras = run_falcon_on_text(
         text=text,
         nli=nli,
         solver_cfg=cfg.get("solver", {}),
@@ -47,6 +47,7 @@ def run_single(cfg_path: str, text: str) -> dict:
         "pairs": len(P),
         "stats": stats.__dict__,
         "output": filtered,
+        "extras": extras,
     }
 
 
