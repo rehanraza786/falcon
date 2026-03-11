@@ -39,6 +39,7 @@ outputs/*.json
 outputs/*.csv
 outputs/ablation/
 outputs/audit/
+outputs/charts/
 *.log
 
 # HuggingFace cache (optional - uncomment to ignore)

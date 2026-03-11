@@ -3,7 +3,7 @@
 # -------------------------
 llm:
   enabled: true
-  provider: hf
+  provider: openai
 
 # -------------------------
 # Provider-specific configs

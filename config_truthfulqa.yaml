@@ -4,7 +4,7 @@
 # -------------------------
 llm:
   enabled: true
-  provider: hf
+  provider: openai
 
 openai:
   model: gpt-4o-mini
